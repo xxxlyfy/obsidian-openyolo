@@ -7,7 +7,6 @@ export type ComposerDraft<TImage, TNote, TExternalFile> = {
   images: TImage[]
   notes: TNote[]
   externalFiles: TExternalFile[]
-  excludedCurrentPath: string | null
 }
 
 export function isAutoAttachedCurrentNote(
@@ -55,5 +54,8 @@ export function settleComposerDraft<TImage, TNote, TExternalFile>(
   result: SubmitResult,
 ): ComposerDraft<TImage, TNote, TExternalFile> {
   if (result !== 'accepted') return draft
-  return { ...draft, text: '', images: [], excludedCurrentPath: null }
+  // Only the message payload is consumed by a send. The current-note
+  // suppression is conversation state owned by the composer and must survive
+  // sending; it is cleared only when the active note changes.
+  return { ...draft, text: '', images: [] }
 }

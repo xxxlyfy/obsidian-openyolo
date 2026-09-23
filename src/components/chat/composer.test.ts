@@ -64,7 +64,6 @@ describe('settleComposerDraft', () => {
     images: [{ data: 'image' }],
     notes: [{ path: 'selected.md' }],
     externalFiles: [{ path: '/tmp/context.txt' }],
-    excludedCurrentPath: 'current.md',
   }
 
   it('clears only text and images when accepted', () => {
@@ -75,7 +74,6 @@ describe('settleComposerDraft', () => {
       images: [],
       notes: draft.notes,
       externalFiles: draft.externalFiles,
-      excludedCurrentPath: null,
     })
     expect(settled.notes).toBe(draft.notes)
     expect(settled.externalFiles).toBe(draft.externalFiles)

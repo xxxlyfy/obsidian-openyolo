@@ -440,7 +440,6 @@ function ChatInput({
       images,
       notes,
       externalFiles,
-      excludedCurrentPath,
     }
     try {
       const result = await onSubmit(trimmed, images, attachedNotes)
@@ -458,7 +457,6 @@ function ChatInput({
         imagesRef.current = remainingImages
         setText((current) => (current === draft.text ? settled.text : current))
         setImages(remainingImages)
-        setExcludedCurrentPath(settled.excludedCurrentPath)
       }
     } catch {
       // A rejected submission has failed; leave the draft intact for retry.
