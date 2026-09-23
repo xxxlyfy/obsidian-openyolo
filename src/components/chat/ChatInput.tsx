@@ -25,6 +25,7 @@ import {
   isAutoAttachedCurrentNote,
   settleComposerDraft,
 } from './composer'
+import { restoreComposerFocus } from './composerFocus'
 import {
   IMAGE_ATTACHMENT_LIMITS,
   type ImageAttachmentLimitReason,
@@ -204,6 +205,7 @@ function ChatInput({
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const pendingFocusRestoreRef = useRef(false)
   const historyNavigation = useRef(new InputHistoryNavigation())
   const historyCaretRef = useRef<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -240,6 +242,17 @@ function ChatInput({
       imagesRef.current = []
     }
   }, [])
+
+  // Restore composer focus after a submission settles. This effect is keyed on
+  // `submitting` only: it runs once when the textarea becomes editable again,
+  // never on streaming chunks, session state or message list updates. It is a
+  // no-op unless the send flow explicitly requested a restore.
+  useEffect(() => {
+    if (submitting) return
+    if (!pendingFocusRestoreRef.current) return
+    pendingFocusRestoreRef.current = false
+    restoreComposerFocus(textareaRef.current)
+  }, [submitting])
 
   const currentNote =
     settings.attachCurrentNote &&
@@ -416,6 +429,12 @@ function ChatInput({
 
     submittingRef.current = true
     setSubmitting(true)
+    // Remember whether the user was typing here when they hit Enter, so we can
+    // restore focus after the textarea is re-enabled — but not if they moved on.
+    const activeTextarea = textareaRef.current
+    pendingFocusRestoreRef.current =
+      activeTextarea !== null &&
+      activeTextarea.ownerDocument.activeElement === activeTextarea
     const draft = {
       text,
       images,
