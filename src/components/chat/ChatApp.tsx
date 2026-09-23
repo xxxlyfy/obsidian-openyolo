@@ -161,12 +161,80 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
     [activateSingleTab, closeStaleLoadedTab, service, t],
   )
 
+  const switchAfterDelete = useCallback(
+    async (deletedSessionId: string) => {
+      const sequence = ++switchSequenceRef.current
+      targetSessionRef.current = null
+      const existingTabIds = new Set(service.listTabs().map((tab) => tab.tabId))
+      let nextTabId: string | null = null
+      try {
+        const history = await service.listHistory()
+        const next = history.find(
+          (session) => session.sessionId !== deletedSessionId,
+        )
+        if (next) {
+          targetSessionRef.current = next.sessionId
+          nextTabId = await service.openHistoryTab(next.sessionId, next.title)
+        }
+      } catch {
+        nextTabId = null
+      }
+      if (nextTabId === null) {
+        if (!mountedRef.current || sequence !== switchSequenceRef.current) {
+          return
+        }
+        activateSingleTab(service.createTab())
+        return
+      }
+      if (!mountedRef.current) {
+        closeStaleLoadedTab(nextTabId, existingTabIds, false)
+        return
+      }
+      if (sequence !== switchSequenceRef.current) {
+        closeStaleLoadedTab(nextTabId, existingTabIds)
+        return
+      }
+      activateSingleTab(nextTabId)
+    },
+    [activateSingleTab, closeStaleLoadedTab, service],
+  )
+
+  const handleDeleteHistory = useCallback(
+    async (session: HistorySessionInfo): Promise<boolean> => {
+      const activeTabId = activeTabRef.current
+      const activeSessionId = activeTabId
+        ? (service.getState(activeTabId)?.sessionId ?? null)
+        : null
+      try {
+        await service.deleteHistorySession(session.sessionId)
+      } catch (error) {
+        new Notice(
+          error instanceof Error
+            ? error.message
+            : t(
+                'chat.deleteHistoryFailed',
+                'Could not delete the conversation.',
+              ),
+        )
+        return false
+      }
+      // The active conversation is gone; fall back to another session or a
+      // blank chat so the UI never points at a deleted session.
+      if (activeSessionId === session.sessionId) {
+        await switchAfterDelete(session.sessionId)
+      }
+      return true
+    },
+    [service, switchAfterDelete, t],
+  )
+
   return (
     <div className="yolo-chat-container yolo-chat-container--sidebar">
       <HeaderBar
         tabId={tabId}
         onNew={handleNew}
         onOpenHistory={handleOpenHistory}
+        onDeleteHistory={handleDeleteHistory}
       />
       <SetupBanner
         availability={availability}

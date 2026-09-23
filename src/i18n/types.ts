@@ -9,6 +9,7 @@ export type TranslationKeys = {
     loading: string
     send: string
     stop: string
+    cancel: string
   }
   chat: {
     newChat: string
@@ -16,6 +17,9 @@ export type TranslationKeys = {
     history: string
     historyEmpty: string
     historyLoadFailed: string
+    deleteHistory: string
+    deleteHistoryConfirm: string
+    deleteHistoryFailed: string
     inputHistorySaveFailed: string
     inputPlaceholder: string
     stopGenerating: string

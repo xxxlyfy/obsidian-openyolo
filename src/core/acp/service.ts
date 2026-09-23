@@ -1,6 +1,7 @@
 import type {
   AgentCapabilities,
   ContentBlock,
+  DeleteSessionResponse,
   Implementation,
   ListSessionsResponse,
   LoadSessionResponse,
@@ -177,6 +178,7 @@ export class AcpSessionService {
   private openingBySession = new Map<string, Promise<string>>()
   private closingBySession = new Map<string, Promise<void>>()
   private remoteCloseBySession = new Map<string, Promise<void>>()
+  private deletingBySession = new Map<string, Promise<void>>()
   private closingTurns = new Set<TurnRecord>()
   private permissionManager: PermissionManager
   private availabilityListeners = new Set<(state: AvailabilityState) => void>()
@@ -225,6 +227,14 @@ export class AcpSessionService {
 
   getAgentCapabilities(): AgentCapabilities {
     return this.client?.agentCapabilities ?? {}
+  }
+
+  /**
+   * Whether the connected agent supports `session/delete`. The UI uses this to
+   * avoid offering an action that cannot be honored.
+   */
+  canDeleteHistorySessions(): boolean {
+    return this.supportsSessionCapability('delete')
   }
 
   onAvailabilityChange(
@@ -768,7 +778,21 @@ export class AcpSessionService {
     return tabId
   }
 
+  /**
+   * Releases a tab locally and, unless {@link releaseTab} is told otherwise,
+   * closes the backing remote session too. Callers that have already dealt with
+   * the remote session (for example after `session/delete`) pass a no-op.
+   */
   async closeTab(tabId: string): Promise<void> {
+    return this.releaseTab(tabId, (sessionId) =>
+      this.closeRemoteSession(sessionId),
+    )
+  }
+
+  private async releaseTab(
+    tabId: string,
+    closeRemote: (sessionId: string) => Promise<void>,
+  ): Promise<void> {
     const tab = this.tabs.get(tabId)
     if (!tab) return
     const turn = tab.activeTurn
@@ -801,7 +825,7 @@ export class AcpSessionService {
         if (opening) {
           await this.containHistoryLoad(opening, loadGeneration)
         }
-        await this.closeRemoteSession(sessionId)
+        await closeRemote(sessionId)
       })()
       closing = Promise.allSettled([
         remoteClose,
@@ -817,6 +841,85 @@ export class AcpSessionService {
         this.closingBySession.delete(closingSessionId)
       }
     }
+  }
+
+  /**
+   * Deletes a session for real via the ACP `session/delete` method.
+   *
+   * This is distinct from {@link closeTab}: closing releases a session handle
+   * while deleting removes the session from the agent's `session/list`. The
+   * plugin keeps no local history list, so without a working `session/delete`
+   * there is nothing to remove durably and this rejects instead of faking it.
+   */
+  async deleteHistorySession(sessionId: string): Promise<void> {
+    await this.ensureStarted()
+    const generation = this.activeGeneration
+    if (!this.canDeleteHistorySessions()) {
+      throw new Error(
+        'The connected ACP agent does not support deleting sessions',
+      )
+    }
+    const existing = this.deletingBySession.get(sessionId)
+    if (existing) return existing
+    const deleting = this.performDeleteHistorySession(sessionId, generation)
+    this.deletingBySession.set(sessionId, deleting)
+    try {
+      await deleting
+    } finally {
+      if (this.deletingBySession.get(sessionId) === deleting) {
+        this.deletingBySession.delete(sessionId)
+      }
+    }
+  }
+
+  private async performDeleteHistorySession(
+    sessionId: string,
+    generation: number,
+  ): Promise<void> {
+    // Stop local activity before asking the agent to delete. A running prompt
+    // must be cancelled first so the agent is never told to delete a session
+    // that is still live; the same generation guards protect the request below.
+    const tabId = this.tabBySession.get(sessionId) ?? null
+    const tab = tabId ? (this.tabs.get(tabId) ?? null) : null
+    if (tab) {
+      const turn = tab.activeTurn
+      if (turn) {
+        await this.cancel(tab.tabId)
+        await turn.settled
+      }
+      tab.loadController?.abort(new Error('Session deleted while loading'))
+    }
+    const opening = this.openingBySession.get(sessionId)
+    if (opening) {
+      await opening.then(
+        () => undefined,
+        () => undefined,
+      )
+    }
+
+    try {
+      await this.request<DeleteSessionResponse>(
+        'session/delete',
+        { sessionId },
+        { generation },
+      )
+    } catch (error) {
+      // Surface a clear error and leave every open tab untouched so the user
+      // can retry without losing their place.
+      throw new Error(this.friendlyError(error))
+    }
+
+    // The remote session is gone; release any local tab without a redundant
+    // `session/close`, which would target a session that no longer exists.
+    await this.releaseSessionTab(sessionId)
+    this.permissionManager.cancelSession(sessionId)
+    this.emitActivity()
+  }
+
+  private async releaseSessionTab(sessionId: string): Promise<void> {
+    const tabId = this.tabBySession.get(sessionId)
+    if (!tabId) return
+    await this.releaseTab(tabId, () => Promise.resolve())
   }
 
   private async containHistoryLoad(
@@ -1051,7 +1154,9 @@ export class AcpSessionService {
     }
   }
 
-  private supportsSessionCapability(capability: 'close' | 'resume'): boolean {
+  private supportsSessionCapability(
+    capability: 'close' | 'resume' | 'delete',
+  ): boolean {
     return (
       this.client?.agentCapabilities.sessionCapabilities?.[capability] != null
     )

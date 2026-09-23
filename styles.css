@@ -2664,6 +2664,57 @@ button.yolo-todo-panel__icon-button svg {
   margin-left: auto;
 }
 
+/* 历史条目：左侧打开按钮 + 右侧删除按钮，避免按钮嵌套。 */
+.yolo-acp-history-item {
+  gap: 4px;
+  cursor: default;
+}
+
+.yolo-popover-surface button.yolo-acp-history-open {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.yolo-popover-surface button.yolo-acp-history-open:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.yolo-acp-history-delete {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+.yolo-acp-history-item:hover .yolo-acp-history-delete,
+.yolo-acp-history-item:focus-within .yolo-acp-history-delete {
+  opacity: 1;
+}
+
+.yolo-acp-history-delete:hover {
+  color: var(--text-error);
+}
+
+.yolo-acp-history-confirm-title {
+  margin-top: 4px;
+  font-weight: var(--font-semibold);
+  word-break: break-word;
+}
+
 /* 设置引导横幅 */
 
 .yolo-setup-banner {

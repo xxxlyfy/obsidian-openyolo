@@ -7,6 +7,7 @@ import type {
   PromptResponse,
   SendRequestOptions,
   SessionConfigOption,
+  SessionNotification,
   SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk'
 import type { App } from 'obsidian'
@@ -46,6 +47,7 @@ const OPENCODE_CAPABILITIES: AgentCapabilities = {
     list: {},
     resume: {},
     close: {},
+    delete: {},
   },
 }
 
@@ -177,6 +179,10 @@ class FakeClient implements AcpClientPort {
     this.hooks?.onDisconnected?.(reason)
   }
 
+  emitSessionUpdate(notification: SessionNotification): void {
+    this.hooks?.onSessionUpdate?.(notification)
+  }
+
   private request<T>(
     method: string,
     params?: unknown,
@@ -235,6 +241,7 @@ class FakeClient implements AcpClientPort {
       case 'session/load':
       case 'session/resume':
       case 'session/close':
+      case 'session/delete':
       case 'session/set_mode':
       case 'session/set_config_option':
         return {}
@@ -1287,5 +1294,170 @@ describe('AcpSessionService', () => {
     expect(availability).toEqual(['starting'])
     expect(client.isConnected).toBe(false)
     expect(client.dispose).toHaveBeenCalled()
+  })
+
+  it('deletes a history session through session/delete', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+
+    await service.deleteHistorySession('history-1')
+
+    expect(client.requests.map((request) => request.method)).toEqual([
+      'session/delete',
+    ])
+    expect(
+      client.requests.find((request) => request.method === 'session/delete')
+        ?.params,
+    ).toEqual({ sessionId: 'history-1' })
+  })
+
+  it('keeps the open session when deleting it fails', async () => {
+    const client = new FakeClient('A')
+    client.queueResponse('session/delete', new Error('delete rejected'))
+    const { service } = makeService(client)
+    const tabId = await service.openHistoryTab('history-1', 'History')
+    await flushMicrotasks()
+
+    await expect(service.deleteHistorySession('history-1')).rejects.toThrow(
+      'delete rejected',
+    )
+
+    expect(service.getState(tabId)?.sessionId).toBe('history-1')
+    expect(service.listTabs()).toEqual([{ tabId }])
+    expect(client.countRequests('session/close')).toBe(0)
+  })
+
+  it('detaches the open tab after deleting its session', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+    const tabId = await service.openHistoryTab('history-1', 'History')
+    await flushMicrotasks()
+
+    await service.deleteHistorySession('history-1')
+
+    expect(service.getState(tabId)).toBeNull()
+    expect(service.listTabs()).toEqual([])
+    expect(client.countRequests('session/delete')).toBe(1)
+    expect(client.countRequests('session/close')).toBe(0)
+    expect(client.countRequests('session/load')).toBe(1)
+  })
+
+  it('reflects a deleted session on the next history refresh', async () => {
+    const client = new FakeClient('A')
+    client.queueResponse('session/list', {
+      sessions: [
+        { sessionId: 'a', title: 'A', updatedAt: '2026-08-07T00:00:00Z' },
+        { sessionId: 'b', title: 'B', updatedAt: '2026-08-06T00:00:00Z' },
+      ],
+    })
+    client.queueResponse('session/list', {
+      sessions: [
+        { sessionId: 'b', title: 'B', updatedAt: '2026-08-06T00:00:00Z' },
+      ],
+    })
+    const { service } = makeService(client)
+
+    expect((await service.listHistory()).map((s) => s.sessionId)).toEqual([
+      'a',
+      'b',
+    ])
+
+    await service.deleteHistorySession('a')
+
+    expect((await service.listHistory()).map((s) => s.sessionId)).toEqual(['b'])
+  })
+
+  it('deduplicates concurrent deletes of the same session', async () => {
+    const remove = deferred<Record<string, never>>()
+    const client = new FakeClient('A')
+    client.queueResponse('session/delete', remove.promise)
+    const { service } = makeService(client)
+
+    const first = service.deleteHistorySession('history-1')
+    const second = service.deleteHistorySession('history-1')
+    await flushMicrotasks()
+
+    expect(client.countRequests('session/delete')).toBe(1)
+
+    remove.resolve({})
+    await Promise.all([first, second])
+
+    expect(client.countRequests('session/delete')).toBe(1)
+  })
+
+  it('cancels a running prompt before deleting its session', async () => {
+    const prompt = deferred<PromptResponse>()
+    const client = new FakeClient('A')
+    client.queueResponse('session/prompt', prompt.promise)
+    const { service } = makeService(client)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+    expect(await service.submit(tabId, 'hello', PROMPT)).toBe('accepted')
+    const sessionId = service.getState(tabId)?.sessionId as string
+
+    const deleting = service.deleteHistorySession(sessionId)
+    await flushMicrotasks()
+
+    expect(client.notifications).toContainEqual({
+      method: 'session/cancel',
+      params: { sessionId },
+    })
+    expect(client.countRequests('session/delete')).toBe(0)
+
+    prompt.reject({ code: -32800, message: 'cancelled' })
+    await deleting
+
+    expect(client.countRequests('session/delete')).toBe(1)
+    expect(service.getState(tabId)).toBeNull()
+  })
+
+  it('ignores updates for a session that was just deleted', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+    const tabId = await service.openHistoryTab('history-1', 'History')
+    await flushMicrotasks()
+
+    await service.deleteHistorySession('history-1')
+    client.emitSessionUpdate({
+      sessionId: 'history-1',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'late' },
+      },
+    })
+    await flushMicrotasks()
+
+    expect(service.listTabs()).toEqual([])
+    expect(service.getState(tabId)).toBeNull()
+    expect(client.countRequests('session/new')).toBe(0)
+  })
+
+  it('rejects deletion when the agent does not advertise session/delete', async () => {
+    const client = new FakeClient('A', null, {
+      loadSession: true,
+      sessionCapabilities: { list: {}, resume: {} },
+    })
+    const { service } = makeService(client)
+
+    await expect(service.deleteHistorySession('history-1')).rejects.toThrow(
+      'does not support deleting',
+    )
+    expect(client.countRequests('session/delete')).toBe(0)
+  })
+
+  it('leaves other open sessions untouched when deleting one', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+    const firstTabId = await service.openHistoryTab('history-1', 'One')
+    await flushMicrotasks()
+    const secondTabId = await service.openHistoryTab('history-2', 'Two')
+    await flushMicrotasks()
+
+    await service.deleteHistorySession('history-1')
+
+    expect(service.getState(firstTabId)).toBeNull()
+    expect(service.getState(secondTabId)?.sessionId).toBe('history-2')
+    expect(client.countRequests('session/delete')).toBe(1)
+    expect(client.isConnected).toBe(true)
   })
 })

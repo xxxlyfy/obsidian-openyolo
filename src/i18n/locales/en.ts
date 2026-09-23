@@ -9,6 +9,7 @@ export const en: TranslationKeys = {
     loading: 'Loading…',
     send: 'Send',
     stop: 'Stop',
+    cancel: 'Cancel',
   },
   chat: {
     newChat: 'New chat',
@@ -16,6 +17,9 @@ export const en: TranslationKeys = {
     history: 'History',
     historyEmpty: 'No previous sessions',
     historyLoadFailed: 'Could not load chat history.',
+    deleteHistory: 'Delete chat',
+    deleteHistoryConfirm: 'Delete this conversation? This cannot be undone.',
+    deleteHistoryFailed: 'Could not delete the conversation.',
     inputHistorySaveFailed: 'Could not save input history locally.',
     inputPlaceholder: 'Ask anything… ( / for commands)',
     stopGenerating: 'Stop generating',

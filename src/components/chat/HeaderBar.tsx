@@ -1,4 +1,6 @@
-import { History, Plus } from 'lucide-react'
+import { History, Plus, Trash2 } from 'lucide-react'
+import type { App } from 'obsidian'
+import { Modal } from 'obsidian'
 import {
   memo,
   useCallback,
@@ -10,9 +12,57 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 
+import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import type { HistorySessionInfo } from '../../types/chat'
+
+type Translate = (keyPath: string, fallback?: string) => string
+
+/**
+ * Asks the user to confirm deleting a conversation. Uses Obsidian's Modal so
+ * the confirmation matches the host app, and always resolves exactly once.
+ */
+function confirmDeleteSession(
+  app: App,
+  title: string,
+  t: Translate,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const modal = new Modal(app)
+    let settled = false
+    const finish = (result: boolean) => {
+      if (settled) return
+      settled = true
+      modal.close()
+      resolve(result)
+    }
+    modal.titleEl.setText(t('chat.deleteHistory', 'Delete chat'))
+    modal.contentEl.empty()
+    modal.contentEl.createEl('p', {
+      text: t(
+        'chat.deleteHistoryConfirm',
+        'Delete this conversation? This cannot be undone.',
+      ),
+    })
+    modal.contentEl.createDiv({
+      cls: 'yolo-acp-history-confirm-title',
+      text: title || t('chat.untitled', 'New chat'),
+    })
+    const buttons = modal.contentEl.createDiv({ cls: 'modal-button-container' })
+    const cancelButton = buttons.createEl('button', {
+      text: t('common.cancel', 'Cancel'),
+    })
+    cancelButton.addEventListener('click', () => finish(false))
+    const confirmButton = buttons.createEl('button', {
+      cls: 'mod-warning',
+      text: t('chat.deleteHistory', 'Delete chat'),
+    })
+    confirmButton.addEventListener('click', () => finish(true))
+    modal.onClose = () => finish(false)
+    modal.open()
+  })
+}
 
 function HistoryPopup({
   anchorRef,
@@ -95,14 +145,20 @@ function HistoryPopup({
 
 function HistoryDropdown({
   onOpenHistory,
+  onDeleteHistory,
 }: {
   onOpenHistory: (session: HistorySessionInfo) => void
+  onDeleteHistory: (session: HistorySessionInfo) => Promise<boolean>
 }) {
   const service = useSessionService()
+  const app = useApp()
   const { t } = useLanguage()
   const [open, setOpen] = useState(false)
   const [sessions, setSessions] = useState<HistorySessionInfo[] | null>(null)
   const [historyError, setHistoryError] = useState(false)
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(
+    null,
+  )
   const containerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupId = useId()
@@ -134,7 +190,8 @@ function HistoryDropdown({
       if (
         containerRef.current &&
         !containerRef.current.contains(target) &&
-        !targetElement?.closest('.yolo-acp-history-popup')
+        !targetElement?.closest('.yolo-acp-history-popup') &&
+        !targetElement?.closest('.modal-container')
       ) {
         setOpen(false)
       }
@@ -153,25 +210,64 @@ function HistoryDropdown({
     }
   }, [closePopup, open, service])
 
+  const handleDelete = useCallback(
+    async (session: HistorySessionInfo) => {
+      if (deletingSessionId) return
+      const confirmed = await confirmDeleteSession(app, session.title, t)
+      if (!confirmed) return
+      setDeletingSessionId(session.sessionId)
+      try {
+        const deleted = await onDeleteHistory(session)
+        if (deleted) {
+          const list = await service.listHistory().catch(() => null)
+          if (list) setSessions(list)
+        }
+      } finally {
+        setDeletingSessionId(null)
+      }
+    },
+    [app, deletingSessionId, onDeleteHistory, service, t],
+  )
+
+  const canDelete = service.canDeleteHistorySessions()
+
   const sessionItems = (sessions ?? []).map((session) => (
-    <button
+    <div
       key={session.sessionId}
-      type="button"
-      className="yolo-popover-item"
-      onClick={() => {
-        closePopup()
-        onOpenHistory(session)
-      }}
+      className="yolo-popover-item yolo-acp-history-item"
     >
-      <span className="yolo-popover-item__label">
-        {session.title || t('chat.untitled', 'New chat')}
-      </span>
-      {session.updatedAt ? (
-        <span className="yolo-acp-history-date">
-          {new Date(session.updatedAt).toLocaleDateString()}
+      <button
+        type="button"
+        className="yolo-acp-history-open"
+        onClick={() => {
+          closePopup()
+          onOpenHistory(session)
+        }}
+      >
+        <span className="yolo-popover-item__label">
+          {session.title || t('chat.untitled', 'New chat')}
         </span>
+        {session.updatedAt ? (
+          <span className="yolo-acp-history-date">
+            {new Date(session.updatedAt).toLocaleDateString()}
+          </span>
+        ) : null}
+      </button>
+      {canDelete ? (
+        <button
+          type="button"
+          className="clickable-icon yolo-acp-history-delete"
+          title={t('chat.deleteHistory', 'Delete chat')}
+          aria-label={t('chat.deleteHistory', 'Delete chat')}
+          disabled={deletingSessionId === session.sessionId}
+          onClick={() => {
+            void handleDelete(session)
+          }}
+        >
+          <Trash2 size={14} />
+        </button>
       ) : null}
-    </button>
+    </div>
   ))
 
   return (
@@ -240,15 +336,24 @@ type HeaderBarProps = {
   tabId: string | null
   onNew: () => void
   onOpenHistory: (session: HistorySessionInfo) => void
+  onDeleteHistory: (session: HistorySessionInfo) => Promise<boolean>
 }
 
-function HeaderBar({ tabId, onNew, onOpenHistory }: HeaderBarProps) {
+function HeaderBar({
+  tabId,
+  onNew,
+  onOpenHistory,
+  onDeleteHistory,
+}: HeaderBarProps) {
   const { t } = useLanguage()
   return (
     <div className="yolo-acp-header">
       <HeaderTitle tabId={tabId} />
       <div className="yolo-acp-header-actions">
-        <HistoryDropdown onOpenHistory={onOpenHistory} />
+        <HistoryDropdown
+          onOpenHistory={onOpenHistory}
+          onDeleteHistory={onDeleteHistory}
+        />
         <button
           type="button"
           className="clickable-icon"

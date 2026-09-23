@@ -9,6 +9,7 @@ export const zh: TranslationKeys = {
     loading: '加载中…',
     send: '发送',
     stop: '停止',
+    cancel: '取消',
   },
   chat: {
     newChat: '新对话',
@@ -16,6 +17,9 @@ export const zh: TranslationKeys = {
     history: '历史',
     historyEmpty: '暂无历史会话',
     historyLoadFailed: '无法加载历史会话。',
+    deleteHistory: '删除对话',
+    deleteHistoryConfirm: '确定删除这个对话吗？此操作无法撤销。',
+    deleteHistoryFailed: '删除对话失败。',
     inputHistorySaveFailed: '输入历史未能保存到本地。',
     inputPlaceholder: '输入消息…（ / 唤起命令）',
     stopGenerating: '停止生成',
